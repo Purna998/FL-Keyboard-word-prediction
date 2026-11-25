@@ -63,6 +63,17 @@ class RemoteClient:
         out = torch.load(io.BytesIO(r.content), weights_only=True)
         return out["weights"], out["n"], out["loss"]
 
+    def personalize(self, global_state, epochs, lr):
+        buf = io.BytesIO()
+        torch.save(global_state, buf)
+        r = requests.post(
+            f"{self.url}/personalize",
+            params={"epochs": epochs, "lr": lr},
+            data=buf.getvalue(),
+            timeout=600,
+        )
+        r.raise_for_status()
+        return r.json()
 
 class FLServer:
     def __init__(self, model, vocab, clients, val_lines, weights_path, history_path):

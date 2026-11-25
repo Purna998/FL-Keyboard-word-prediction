@@ -1,69 +1,61 @@
 import json
-import threading  # noqa: F401
+import os
 from pathlib import Path
 
 import torch
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from fl import Client, FLServer, train_on
-from metrics import SEQ_LEN, evaluate, frequency_baseline, make_samples
+from fl import FLServer, RemoteClient
+from metrics import SEQ_LEN, evaluate
 from model import NextWordModel
 from vocab import Vocab, tokenize
 
 torch.manual_seed(0)
 
 ROOT = Path(__file__).parent.parent
-DATA = ROOT / "data"
 ART = ROOT / "artifacts"
-ART.mkdir(exist_ok=True)
+N_CLIENTS = int(os.environ.get("N_CLIENTS", 12))
+BASE_PORT = 9001
 
+for f in ("vocab.json", "baseline.pt", "reference.json"):
+    if not (ART / f).exists():
+        raise SystemExit(f"artifacts/{f} missing. Run: python make_baseline.py")
 
-def read_lines(path):
-    return [l.strip() for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+# The server holds: a vocab file, two models, and a validation set used only for testing.
+# It never opens any client's text.
+val_lines = [l.strip() for l in (ROOT / "data" / "val.txt").read_text(encoding="utf-8").splitlines() if l.strip()]
+vocab = Vocab(json.loads((ART / "vocab.json").read_text(encoding="utf-8")))
+reference = json.loads((ART / "reference.json").read_text(encoding="utf-8"))
 
-
-train_lines = read_lines(DATA / "clean_corpus.txt")
-val_lines = read_lines(DATA / "val.txt")
-
-# ---------- vocab (saved, so it never changes between restarts) ----------
-VOCAB_PATH = ART / "vocab.json"
-if VOCAB_PATH.exists():
-    vocab = Vocab(json.loads(VOCAB_PATH.read_text(encoding="utf-8")))
-else:
-    vocab = Vocab.build(train_lines, max_size=5000)
-    VOCAB_PATH.write_text(json.dumps(vocab.itos[2:]), encoding="utf-8")
-print("vocab size:", len(vocab))
-
-# ---------- centralized baseline (trained once, then loaded) ----------
 baseline = NextWordModel(len(vocab))
-BASE_PATH = ART / "baseline.pt"
-if BASE_PATH.exists():
-    baseline.load_state_dict(torch.load(BASE_PATH))
-    print("loaded baseline from disk")
-else:
-    x, y = make_samples(train_lines, vocab)
-    loss = train_on(baseline, x, y, epochs=3, lr=0.005, batch_size=512)
-    torch.save(baseline.state_dict(), BASE_PATH)
-    print(f"trained baseline, final loss={loss:.3f}")
+baseline.load_state_dict(torch.load(ART / "baseline.pt"))
 baseline.eval()
-
-# ---------- federated setup: one client per story ----------
-clients = [
-    Client(f.stem, read_lines(f), vocab)
-    for f in sorted((DATA / "clients").glob("holmes_*.txt"))
-]
-print("clients:", [(c.cid, c.n) for c in clients])
 
 fed = FLServer(
     model=NextWordModel(len(vocab)),
     vocab=vocab,
-    clients=clients,
+    clients=[],
     val_lines=val_lines,
     weights_path=ART / "federated.pt",
     history_path=ART / "fl_history.json",
 )
+
+
+def discover():
+    """Find the client processes that are currently running."""
+    found = []
+    for i in range(N_CLIENTS):
+        try:
+            found.append(RemoteClient(f"http://127.0.0.1:{BASE_PORT + i}"))
+        except Exception:
+            pass
+    fed.clients = found
+    return found
+
+
+print("clients found:", [(c.cid, c.n) for c in discover()])
 
 # ---------- API ----------
 app = FastAPI()
@@ -78,8 +70,7 @@ def top_k(model, text, k):
         logits = model(torch.tensor([ids]))[0]
     logits[0] = float("-inf")  # <pad>
     logits[1] = float("-inf")  # <unk>
-    top = torch.topk(logits, k).indices.tolist()
-    return [vocab.itos[i] for i in top]
+    return [vocab.itos[i] for i in torch.topk(logits, k).indices.tolist()]
 
 
 class PredictIn(BaseModel):
@@ -100,7 +91,8 @@ def predict(body: PredictIn):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "vocab_size": len(vocab), "fl_round": fed.round}
+    return {"ok": True, "vocab_size": len(vocab), "fl_round": fed.round,
+            "clients_online": len(fed.clients)}
 
 
 @app.get("/evaluate")
@@ -109,8 +101,22 @@ def evaluate_endpoint():
         "baseline": evaluate(baseline, vocab, val_lines),
         "federated": fed._evaluate(),
         "fl_round": fed.round,
-        "frequency_baseline": frequency_baseline(vocab, train_lines, val_lines),
+        "frequency_baseline": reference,
     }
+
+
+@app.get("/fl/clients")
+def fl_clients():
+    return [{"cid": c.cid, "samples": c.n, "url": c.url} for c in discover()]
+
+@app.post("/fl/personalize/{cid}")
+def fl_personalize(cid: str, epochs: int = 8, lr: float = 0.003):
+    c = next((c for c in discover() if c.cid == cid), None)
+    if c is None:
+        raise HTTPException(404, f"client {cid} is not online")
+    with fed.lock:
+        state = {k: v.detach().clone() for k, v in fed.model.state_dict().items()}
+    return c.personalize(state, epochs, lr)  # the server only hands out the global model
 
 
 class FLConfig(BaseModel):
@@ -122,6 +128,8 @@ class FLConfig(BaseModel):
 
 @app.post("/fl/start")
 def fl_start(cfg: FLConfig):
+    if not discover():
+        return {"started": False, "message": "no client processes found, run .\\run_clients.ps1"}
     ok = fed.start(rounds=cfg.rounds, clients_per_round=cfg.clients_per_round,
                    local_epochs=cfg.local_epochs, lr=cfg.lr)
     return {"started": ok, "message": "started" if ok else "already running"}
@@ -139,3 +147,4 @@ def fl_reset():
         return {"reset": False, "message": "training is running"}
     fed.reset()
     return {"reset": True}
+

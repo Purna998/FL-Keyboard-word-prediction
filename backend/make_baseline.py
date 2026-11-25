@@ -34,7 +34,7 @@ if (ART / "baseline.pt").exists():
 else:
     model = NextWordModel(len(vocab))
     x, y = make_samples(train_lines, vocab)
-    loss = train_on(model, x, y, epochs=3, lr=0.005, batch_size=512)
+    loss = train_on(model, x, y, epochs=40, lr=0.005, batch_size=64)
     torch.save(model.state_dict(), ART / "baseline.pt")
     print(f"trained baseline, loss={loss:.3f}")
 
