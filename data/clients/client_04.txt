@@ -1,0 +1,28 @@
+i pushed the new code to the main branch
+there is a bug in the login page again
+can you review my pull request before the meeting
+the server crashed last night and nobody noticed it
+the database is slow and we need to fix
+please check the logs and tell me the error
+i am writing tests for the new feature now
+the build failed because of a missing package again
+i fixed the issue but the test still fails
+can you restart the server and try once more
+the api returns an error when the token expires
+i need more time to finish this task properly
+my laptop is slow when i compile the project
+the client wants one more change before the release
+i will update the documentation after the code review
+do not merge the branch before the tests pass
+i found the problem it was a small typo
+please send me the error message from the console
+we need to upgrade the library to the latest version
+the frontend and backend are finally working together now
+can you help me debug this function today
+the app is crashing on the old phones
+our team is working on a big release this month
+let me check the code and call you back
+i learned a new trick for faster database queries
+the pipeline is green and ready to deploy
+someone broke the build and now everyone is waiting
+i spent the whole day fixing one bug
