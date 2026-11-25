@@ -46,10 +46,23 @@ def train_baseline(epochs=3, batch_size=512):
             total += loss.item() * len(idx)
         print(f"epoch {ep+1}: loss={total/len(x):.3f}")
 
+from metrics import evaluate, frequency_baseline
+
+VAL = Path(__file__).parent.parent / "data" / "val.txt"
+val_lines = [l.strip() for l in VAL.read_text(encoding="utf-8").splitlines() if l.strip()]  
 
 train_baseline()
 
 app = FastAPI()
+
+@app.get("/evaluate")
+def evaluate_endpoint():
+    return {
+        "val": evaluate(model, vocab, val_lines),
+        "train_sample": evaluate(model, vocab, lines[:1000]),
+        "frequency_baseline": frequency_baseline(vocab, lines, val_lines),
+    }
+
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
